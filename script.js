@@ -15,6 +15,8 @@ const FREQ_MAX = 20000; // End of ultrasonic range
 const FREQ_STEP = 200;  // Space between frequencies
 const FREQ_ERROR_MARGIN = 50; // Tolerance for frequency detection
 const DURATION = 100;   // Duration of each tone in ms
+const MIN_SIGNAL_THRESHOLD = 20; // Minimum signal strength to consider
+const NOISE_SAMPLES = 10; // Number of samples to collect for noise floor
 
 // Game variables
 let isLeftPlayer = true; // By default, player is on left side
@@ -37,12 +39,16 @@ let receivedTrajectory = {
   velY: 0,
   timestamp: 0
 };
+let noiseFloor = 0; // Average noise level
+let signalThreshold = MIN_SIGNAL_THRESHOLD; // Dynamic threshold for signal detection
+let consecutiveFailedTransmissions = 0; // Count of failed transmissions
 
 // Audio protocol frequencies
 const PROTOCOL = {
   START: 18000,    // Start marker
   END: 18200,      // End marker
-  DATA_START: 18400 // Start of data frequencies
+  DATA_START: 18400, // Start of data frequencies
+  ACK: 19800       // Acknowledgment tone
 };
 
 // DOM Elements
@@ -309,6 +315,14 @@ function gameLoop(timestamp) {
       sendTrajectoryViaAudio();
       lastAudioUpdate = timestamp;
     }
+    
+    // Retry sending if we've had consecutive failures and enough time has passed
+    if (consecutiveFailedTransmissions > 0 && 
+        timestamp - lastAudioUpdate > AUDIO_UPDATE_INTERVAL / 2) {
+      console.log(`Retrying transmission after ${consecutiveFailedTransmissions} failures`);
+      sendTrajectoryViaAudio();
+      lastAudioUpdate = timestamp;
+    }
   } else {
     // Right player: Calculate ball position based on trajectory
     if (hasBallControl) {
@@ -316,6 +330,14 @@ function gameLoop(timestamp) {
       
       // Send trajectory updates when ball hits paddle or walls
       if (timestamp - lastTrajectoryUpdate > AUDIO_UPDATE_INTERVAL) {
+        sendTrajectoryViaAudio();
+        lastTrajectoryUpdate = timestamp;
+      }
+      
+      // Retry sending if we've had consecutive failures and enough time has passed
+      if (consecutiveFailedTransmissions > 0 && 
+          timestamp - lastTrajectoryUpdate > AUDIO_UPDATE_INTERVAL / 2) {
+        console.log(`Retrying transmission after ${consecutiveFailedTransmissions} failures`);
         sendTrajectoryViaAudio();
         lastTrajectoryUpdate = timestamp;
       }
@@ -328,6 +350,13 @@ function gameLoop(timestamp) {
       sendRightPaddlePosition();
       lastAudioUpdate = timestamp;
     }
+  }
+  
+  // Adjust audio parameters based on transmission success
+  if (consecutiveFailedTransmissions > 3) {
+    // If we've had multiple failures, try increasing the gain
+    const newGain = Math.min(1.0, 0.8 + (consecutiveFailedTransmissions - 3) * 0.05);
+    console.log(`Adjusting audio gain to ${newGain.toFixed(2)} after ${consecutiveFailedTransmissions} failures`);
   }
   
   // Draw game
@@ -555,8 +584,11 @@ function sendTrajectoryViaAudio() {
     const now = audioContext.currentTime;
     const stepDuration = DURATION / 1000; // Convert ms to seconds
     
+    // Adjust gain based on transmission success
+    const gain = Math.min(1.0, 0.8 + (consecutiveFailedTransmissions * 0.05));
+    
     // Turn on oscillator
-    audioSender.gain.setValueAtTime(0.8, now);
+    audioSender.gain.setValueAtTime(gain, now);
     
     // Send START marker
     audioSender.frequency.setValueAtTime(PROTOCOL.START, now);
@@ -567,25 +599,31 @@ function sendTrajectoryViaAudio() {
     const normalizedBallVelX = (ballVelX + BALL_SPEED) / (2 * BALL_SPEED);
     const normalizedBallVelY = (ballVelY + BALL_SPEED) / (2 * BALL_SPEED);
     
+    // Calculate simple checksum (sum of all values * 100, then take last 3 digits)
+    const checksum = Math.floor((normalizedBallX + normalizedBallY + normalizedBallVelX + normalizedBallVelY) * 100) % 1000;
+    const normalizedChecksum = checksum / 1000; // Convert to 0-1 range
+    
     // Map normalized values to frequencies
     const freqX = PROTOCOL.DATA_START + normalizedBallX * FREQ_STEP;
     const freqY = PROTOCOL.DATA_START + normalizedBallY * FREQ_STEP;
     const freqVelX = PROTOCOL.DATA_START + normalizedBallVelX * FREQ_STEP;
     const freqVelY = PROTOCOL.DATA_START + normalizedBallVelY * FREQ_STEP;
+    const freqChecksum = PROTOCOL.DATA_START + normalizedChecksum * FREQ_STEP;
     
     // Send data frequencies
     audioSender.frequency.setValueAtTime(freqX, now + stepDuration);
     audioSender.frequency.setValueAtTime(freqY, now + stepDuration * 2);
     audioSender.frequency.setValueAtTime(freqVelX, now + stepDuration * 3);
     audioSender.frequency.setValueAtTime(freqVelY, now + stepDuration * 4);
+    audioSender.frequency.setValueAtTime(freqChecksum, now + stepDuration * 5);
     
     // Send END marker
-    audioSender.frequency.setValueAtTime(PROTOCOL.END, now + stepDuration * 5);
+    audioSender.frequency.setValueAtTime(PROTOCOL.END, now + stepDuration * 6);
     
     // Turn off oscillator
-    audioSender.gain.setValueAtTime(0, now + stepDuration * 6);
+    audioSender.gain.setValueAtTime(0, now + stepDuration * 7);
     
-    console.log('Sent trajectory update');
+    console.log('Sent trajectory update with checksum:', checksum);
     lastTrajectoryUpdate = performance.now();
   } catch(e) {
     console.error('Error sending trajectory:', e);
@@ -602,11 +640,32 @@ function decodeAudioData() {
     const dataArray = new Uint8Array(bufferLength);
     audioReceiver.getByteFrequencyData(dataArray);
     
+    // Calculate noise floor in the ultrasonic range
+    const minBin = Math.floor(FREQ_MIN * bufferLength / audioContext.sampleRate);
+    const maxBin = Math.ceil(FREQ_MAX * bufferLength / audioContext.sampleRate);
+    
+    // Sample noise levels from bins outside our frequency range
+    let noiseSamples = [];
+    for (let i = Math.max(0, minBin - 20); i < minBin; i++) {
+      noiseSamples.push(dataArray[i]);
+    }
+    for (let i = maxBin + 1; i < Math.min(maxBin + 20, bufferLength); i++) {
+      noiseSamples.push(dataArray[i]);
+    }
+    
+    // Calculate average noise level
+    if (noiseSamples.length > 0) {
+      const avgNoise = noiseSamples.reduce((sum, val) => sum + val, 0) / noiseSamples.length;
+      // Smooth noise floor calculation
+      noiseFloor = noiseFloor * 0.9 + avgNoise * 0.1;
+      
+      // Adjust signal threshold based on noise floor
+      signalThreshold = Math.max(MIN_SIGNAL_THRESHOLD, noiseFloor * 1.5);
+    }
+    
     // Find peak frequency in ultrasonic range
     let maxValue = 0;
     let peakFrequency = 0;
-    const minBin = Math.floor(FREQ_MIN * bufferLength / audioContext.sampleRate);
-    const maxBin = Math.ceil(FREQ_MAX * bufferLength / audioContext.sampleRate);
     
     for (let i = minBin; i <= maxBin; i++) {
       if (dataArray[i] > maxValue) {
@@ -615,12 +674,17 @@ function decodeAudioData() {
       }
     }
     
-    // Only process if signal is strong enough
-    if (maxValue > 30) {
+    // Only process if signal is strong enough compared to noise floor
+    if (maxValue > signalThreshold) {
       // Add to buffer
       frequencyBuffer.push(peakFrequency);
       if (frequencyBuffer.length > maxBufferSize) {
         frequencyBuffer.shift();
+      }
+      
+      // Log strong signals for debugging
+      if (maxValue > signalThreshold * 2) {
+        console.log(`Strong signal detected: ${peakFrequency.toFixed(0)}Hz (${maxValue})`);
       }
     }
   } catch (e) {
@@ -636,8 +700,11 @@ function sendRightPaddlePosition() {
     const now = audioContext.currentTime;
     const stepDuration = DURATION / 1000; // Convert ms to seconds
     
+    // Adjust gain based on transmission success
+    const gain = Math.min(1.0, 0.8 + (consecutiveFailedTransmissions * 0.05));
+    
     // Turn on oscillator
-    audioSender.gain.setValueAtTime(0.8, now);
+    audioSender.gain.setValueAtTime(gain, now);
     
     // Normalize paddle position
     const normalizedRightPaddle = rightPaddleY / canvas.height;
@@ -667,7 +734,7 @@ function processFrequencyBuffer() {
     const startIndex = findFrequencyInBuffer(PROTOCOL.START, FREQ_ERROR_MARGIN);
     const endIndex = findFrequencyInBuffer(PROTOCOL.END, FREQ_ERROR_MARGIN);
     
-    if (startIndex >= 0 && endIndex > startIndex && endIndex - startIndex >= 5) {
+    if (startIndex >= 0 && endIndex > startIndex && endIndex - startIndex >= 6) { // Now expecting 5 data points + checksum
       // Extract data frequencies
       const frequencies = frequencyBuffer.slice(startIndex + 1, endIndex);
       
@@ -676,29 +743,61 @@ function processFrequencyBuffer() {
         (freq - PROTOCOL.DATA_START) / FREQ_STEP
       );
       
-      if (normalizedValues.length >= 4) {
-        // Update received trajectory
-        receivedTrajectory = {
-          startX: normalizedValues[0] * canvas.width,
-          startY: normalizedValues[1] * canvas.height,
-          velX: (normalizedValues[2] * 2 - 1) * BALL_SPEED,
-          velY: (normalizedValues[3] * 2 - 1) * BALL_SPEED,
-          timestamp: performance.now()
-        };
+      if (normalizedValues.length >= 5) { // 4 data points + checksum
+        // Extract data and checksum
+        const receivedX = normalizedValues[0];
+        const receivedY = normalizedValues[1];
+        const receivedVelX = normalizedValues[2];
+        const receivedVelY = normalizedValues[3];
+        const receivedChecksum = normalizedValues[4];
         
-        // Update ball position
-        ballX = receivedTrajectory.startX;
-        ballY = receivedTrajectory.startY;
-        ballVelX = receivedTrajectory.velX;
-        ballVelY = receivedTrajectory.velY;
+        // Calculate checksum from received data
+        const calculatedChecksum = Math.floor((receivedX + receivedY + receivedVelX + receivedVelY) * 100) % 1000 / 1000;
         
-        // Ball control transfers to right player
-        hasBallControl = true;
+        // Verify checksum (with some margin for error due to audio transmission)
+        const checksumValid = Math.abs(receivedChecksum - calculatedChecksum) < 0.05;
         
-        console.log('Received trajectory update');
-        
-        // Clear the buffer after successful processing
-        frequencyBuffer.length = 0;
+        if (checksumValid) {
+          // Update received trajectory
+          receivedTrajectory = {
+            startX: receivedX * canvas.width,
+            startY: receivedY * canvas.height,
+            velX: (receivedVelX * 2 - 1) * BALL_SPEED,
+            velY: (receivedVelY * 2 - 1) * BALL_SPEED,
+            timestamp: performance.now()
+          };
+          
+          // Update ball position
+          ballX = receivedTrajectory.startX;
+          ballY = receivedTrajectory.startY;
+          ballVelX = receivedTrajectory.velX;
+          ballVelY = receivedTrajectory.velY;
+          
+          // Ball control transfers to right player
+          hasBallControl = true;
+          
+          // Reset failed transmission counter on success
+          consecutiveFailedTransmissions = 0;
+          
+          console.log('Received valid trajectory update');
+          
+          // Send acknowledgment tone
+          sendAcknowledgment();
+          
+          // Clear the buffer after successful processing
+          frequencyBuffer.length = 0;
+        } else {
+          console.warn('Received trajectory with invalid checksum');
+          // Increment failed transmission counter
+          consecutiveFailedTransmissions++;
+          
+          // Don't clear buffer completely, shift a bit to look for valid data
+          for (let i = 0; i < 3; i++) {
+            if (frequencyBuffer.length > 0) {
+              frequencyBuffer.shift();
+            }
+          }
+        }
       }
     }
   } else {
@@ -718,11 +817,60 @@ function processFrequencyBuffer() {
         rightPaddleY = normalizedPosition * canvas.height;
         console.log('Received right paddle position update');
         
+        // Reset failed transmission counter on success
+        consecutiveFailedTransmissions = 0;
+        
         // Clear the buffer after successful processing
         frequencyBuffer.length = 0;
       }
     }
+    
+    // Look for acknowledgment tone
+    const ackIndex = findFrequencyInBuffer(PROTOCOL.ACK, FREQ_ERROR_MARGIN);
+    if (ackIndex >= 0) {
+      console.log('Received acknowledgment');
+      // Reset failed transmission counter on acknowledgment
+      consecutiveFailedTransmissions = 0;
+      // Clear the buffer
+      frequencyBuffer.length = 0;
+    }
   }
+}
+
+// Send acknowledgment tone
+function sendAcknowledgment() {
+  if (!audioSender) return;
+  
+  try {
+    const now = audioContext.currentTime;
+    const stepDuration = DURATION / 1000; // Convert ms to seconds
+    
+    // Turn on oscillator
+    audioSender.gain.setValueAtTime(0.8, now);
+    
+    // Send ACK tone
+    audioSender.frequency.setValueAtTime(PROTOCOL.ACK, now);
+    
+    // Turn off oscillator
+    audioSender.gain.setValueAtTime(0, now + stepDuration);
+    
+    console.log('Sent acknowledgment');
+  } catch(e) {
+    console.error('Error sending acknowledgment:', e);
+  }
+}
+
+// Find a frequency in the buffer within error margin
+function findFrequencyInBuffer(targetFreq, errorMargin) {
+  // Adjust error margin based on consecutive failures
+  const adjustedMargin = errorMargin * (1 + (consecutiveFailedTransmissions * 0.2));
+  
+  for (let i = 0; i < frequencyBuffer.length; i++) {
+    if (Math.abs(frequencyBuffer[i] - targetFreq) <= adjustedMargin) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 // Start the game when the page loads
