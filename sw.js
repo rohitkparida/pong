@@ -1,5 +1,5 @@
 // Service Worker for Pong PWA
-const CACHE_NAME = 'pong-pwa-v1.1.0-p2p';
+const CACHE_NAME = 'pong-pwa-v1.2.0-quiet';
 const ASSETS = [
   '/',
   '/index.html',
@@ -7,7 +7,12 @@ const ASSETS = [
   '/script.js',
   '/manifest.json',
   '/icon-192.png',
-  '/icon-512.png'
+  '/icon-512.png',
+  '/pong-profiles.json',
+  '/lib/quiet-quiet-js-7278254/quiet.js',
+  '/lib/quiet-quiet-js-7278254/quiet-emscripten.js',
+  '/lib/quiet-quiet-js-7278254/quiet-emscripten.js.mem',
+  '/lib/quiet-quiet-js-7278254/quiet-profiles.json'
 ];
 
 // Install event - cache assets

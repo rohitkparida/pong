@@ -18,12 +18,25 @@
       });
     }
   </script>
+  <!-- Quiet.js library -->
+  <script src="lib/quiet-quiet-js-7278254/quiet-emscripten.js"></script>
+  <script type="text/javascript">
+    // Load custom profiles for Pong
+    fetch('pong-profiles.json')
+      .then(response => response.json())
+      .then(profiles => {
+        window.quietProfiles = profiles;
+        console.log('Quiet.js profiles loaded');
+      })
+      .catch(err => console.error('Failed to load Quiet.js profiles:', err));
+  </script>
+  <script src="lib/quiet-quiet-js-7278254/quiet.js"></script>
 </head>
 <body>
   <div id="game-container">
     <div id="setup-screen" class="screen active">
       <h1>Pong PWA</h1>
-      <div class="version">v1.1.0-p2p</div>
+      <div class="version">v1.2.0-quiet</div>
       <p>Play Pong with a friend nearby using audio!</p>
       <div class="button-container">
         <button id="start-btn" class="btn">Start Game</button>

@@ -1,7 +1,7 @@
 {
   "name": "Pong PWA",
   "short_name": "Pong",
-  "description": "A peer-to-peer Pong game using audio for data transmission",
+  "description": "A peer-to-peer Pong game using Quiet.js for audio data transmission",
   "start_url": "/",
   "display": "fullscreen",
   "background_color": "#000000",
@@ -21,5 +21,5 @@
     }
   ],
   "orientation": "landscape",
-  "version": "1.1.0"
+  "version": "1.2.0"
 } 
