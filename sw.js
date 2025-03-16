@@ -1,12 +1,12 @@
-const CACHE_NAME = 'pong-pwa-v1';
+const CACHE_NAME = 'pong-pwa-v1-debug';
 const ASSETS = [
-  '/',
-  '/index.html',
-  '/styles.css',
-  '/script.js',
-  '/manifest.json',
-  '/icon.png',
-  '/icon-512.png'
+  './',
+  './index.html',
+  './styles.css',
+  './script.js',
+  './manifest.json',
+  './icon.png',
+  './icon-512.png'
 ];
 
 // Install event - cache assets

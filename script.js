@@ -9,6 +9,13 @@ const BALL_SPEED = 5;
 const PADDLE_SPEED = 8;
 const AUDIO_UPDATE_INTERVAL = 100; // ms between audio transmissions
 
+// Audio constants
+const FREQ_MIN = 18000; // Start of ultrasonic range
+const FREQ_MAX = 20000; // End of ultrasonic range
+const FREQ_STEP = 200;  // Space between frequencies
+const FREQ_ERROR_MARGIN = 50; // Tolerance for frequency detection
+const DURATION = 100;   // Duration of each tone in ms
+
 // Game variables
 let isHost = false;
 let gameActive = false;
@@ -31,6 +38,13 @@ let predictedPath = {
   velX: 0,
   velY: 0,
   timestamp: 0
+};
+
+// Audio protocol frequencies
+const PROTOCOL = {
+  START: 18000,    // Start marker
+  END: 18200,      // End marker
+  DATA_START: 18400 // Start of data frequencies
 };
 
 // DOM Elements
@@ -171,11 +185,18 @@ async function startHostGame() {
     statusMessage.textContent = 'Initializing audio...';
     
     // Initialize audio context
-    await initAudio();
+    if (!await initAudio()) {
+      throw new Error('Failed to initialize audio');
+    }
     
     // Set up audio sender and receiver for host
-    setupAudioSender();
-    await setupAudioReceiver();
+    if (!setupAudioSender()) {
+      throw new Error('Failed to setup audio sender');
+    }
+    
+    if (!await setupAudioReceiver()) {
+      throw new Error('Failed to setup audio receiver');
+    }
     
     // Initialize game state
     resetGameState();
@@ -185,7 +206,7 @@ async function startHostGame() {
     showGameScreen();
     requestAnimationFrame(gameLoop);
     
-    statusMessage.textContent = '';
+    statusMessage.textContent = 'Game started as host';
   } catch (error) {
     console.error('Failed to start host game:', error);
     statusMessage.textContent = 'Error: ' + error.message;
@@ -199,11 +220,18 @@ async function startClientGame() {
     statusMessage.textContent = 'Initializing audio...';
     
     // Initialize audio context
-    await initAudio();
+    if (!await initAudio()) {
+      throw new Error('Failed to initialize audio');
+    }
     
     // Set up audio receiver and sender for client
-    await setupAudioReceiver();
-    setupAudioSender();
+    if (!await setupAudioReceiver()) {
+      throw new Error('Failed to setup audio receiver');
+    }
+    
+    if (!setupAudioSender()) {
+      throw new Error('Failed to setup audio sender');
+    }
     
     // Initialize game state
     resetGameState();
@@ -213,7 +241,7 @@ async function startClientGame() {
     showGameScreen();
     requestAnimationFrame(gameLoop);
     
-    statusMessage.textContent = '';
+    statusMessage.textContent = 'Game started as client';
   } catch (error) {
     console.error('Failed to start client game:', error);
     statusMessage.textContent = 'Error: ' + error.message;
@@ -281,6 +309,12 @@ function gameLoop(timestamp) {
   } else {
     // Client: Calculate ball position based on trajectory
     updateBallFromTrajectory(timestamp);
+    
+    // Send paddle position updates to host
+    if (timestamp - lastAudioUpdate > AUDIO_UPDATE_INTERVAL) {
+      sendClientPaddlePosition();
+      lastAudioUpdate = timestamp;
+    }
   }
   
   // Draw game elements
@@ -434,40 +468,70 @@ function drawGame() {
 
 // Initialize audio context and nodes
 async function initAudio() {
-  // Request microphone permission
   try {
-    await navigator.mediaDevices.getUserMedia({ audio: true });
-  }
-  catch(e) {
-    alert('Microphone access is required to play the game!');
-    return;
-  }
+    // Request microphone permission
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    console.log('Microphone access granted');
 
-  // Create audio context
-  audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    // Create audio context
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    console.log('Audio context created:', audioContext.state);
+
+    // Resume audio context if it's suspended (needed for Chrome)
+    if (audioContext.state === 'suspended') {
+      await audioContext.resume();
+      console.log('Audio context resumed');
+    }
+
+    return true;
+  } catch(e) {
+    console.error('Audio initialization error:', e);
+    alert('Microphone access is required to play the game!');
+    return false;
+  }
 }
 
 // Set up audio sender
 function setupAudioSender() {
-  audioSender = audioContext.createOscillator();
-  const gainNode = audioContext.createGain();
-  
-  audioSender.connect(gainNode);
-  gainNode.connect(audioContext.destination);
-  
-  gainNode.gain.value = 0.3; // Set volume
-  audioSender.start();
+  try {
+    audioSender = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    
+    audioSender.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+    
+    // Use higher volume for ultrasonic frequencies
+    gainNode.gain.value = 0.8;
+    
+    // Start with 0 frequency (silent)
+    audioSender.frequency.setValueAtTime(0, audioContext.currentTime);
+    audioSender.start();
+    
+    console.log('Audio sender setup complete');
+    return true;
+  } catch(e) {
+    console.error('Audio sender setup error:', e);
+    return false;
+  }
 }
 
 // Set up audio receiver
 async function setupAudioReceiver() {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  const source = audioContext.createMediaStreamSource(stream);
-  
-  audioReceiver = audioContext.createAnalyser();
-  audioReceiver.fftSize = 2048;
-  
-  source.connect(audioReceiver);
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const source = audioContext.createMediaStreamSource(stream);
+    
+    audioReceiver = audioContext.createAnalyser();
+    audioReceiver.fftSize = 2048;
+    audioReceiver.smoothingTimeConstant = 0.2;
+    
+    source.connect(audioReceiver);
+    console.log('Audio receiver setup complete');
+    return true;
+  } catch(e) {
+    console.error('Audio receiver setup error:', e);
+    return false;
+  }
 }
 
 // Send game state via audio (host)
@@ -509,66 +573,110 @@ function sendGameStateViaAudio() {
   }
 }
 
-// Send trajectory via audio
+// Send trajectory via audio using STMF
 function sendTrajectoryViaAudio() {
-  if (!audioSender) return;
-  
-  const now = audioContext.currentTime;
-  const stepDuration = 0.01;
-  
-  // Normalize values to frequency range (300Hz - 2000Hz)
-  const normalizedX = ballX / canvas.width;
-  const normalizedY = ballY / canvas.height;
-  const normalizedVelX = (ballVelX + BALL_SPEED) / (2 * BALL_SPEED);
-  const normalizedVelY = (ballVelY + BALL_SPEED) / (2 * BALL_SPEED);
-  
-  // Convert to frequencies
-  const freqX = 300 + normalizedX * 1700;
-  const freqY = 300 + normalizedY * 1700;
-  const freqVelX = 300 + normalizedVelX * 1700;
-  const freqVelY = 300 + normalizedVelY * 1700;
-  
-  // Send trajectory data
-  audioSender.frequency.setValueAtTime(2100, now); // Trajectory marker
-  audioSender.frequency.setValueAtTime(freqX, now + stepDuration);
-  audioSender.frequency.setValueAtTime(freqY, now + stepDuration * 2);
-  audioSender.frequency.setValueAtTime(freqVelX, now + stepDuration * 3);
-  audioSender.frequency.setValueAtTime(freqVelY, now + stepDuration * 4);
-  audioSender.frequency.setValueAtTime(2200, now + stepDuration * 5);
-  
-  lastTrajectoryUpdate = performance.now();
-}
-
-// Decode audio data from receiver
-function decodeAudioData() {
-  if (!audioReceiver) return;
-  
-  const bufferLength = audioReceiver.frequencyBinCount;
-  const dataArray = new Uint8Array(bufferLength);
-  audioReceiver.getByteFrequencyData(dataArray);
-  
-  // Find dominant frequency
-  let maxValue = 0;
-  let maxIndex = 0;
-  
-  for (let i = 0; i < bufferLength; i++) {
-    if (dataArray[i] > maxValue) {
-      maxValue = dataArray[i];
-      maxIndex = i;
-    }
+  if (!audioSender) {
+    console.error('No audio sender available');
+    return;
   }
   
-  // Only process if signal is strong enough
-  if (maxValue < 50) return;
+  const now = audioContext.currentTime;
+  const stepDuration = DURATION / 1000; // Convert to seconds
   
-  // Convert index to frequency
-  const frequency = maxIndex * audioContext.sampleRate / (2 * bufferLength);
+  try {
+    // Reset to silence
+    audioSender.frequency.setValueAtTime(0, now);
+    
+    // Start marker
+    audioSender.frequency.setValueAtTime(PROTOCOL.START, now + stepDuration);
+    
+    // Encode ball data into frequencies
+    // Map each value to a frequency between DATA_START and FREQ_MAX
+    const dataRange = FREQ_MAX - PROTOCOL.DATA_START;
+    
+    // Normalize and encode position and velocity
+    const normalizedX = Math.min(1, Math.max(0, ballX / canvas.width));
+    const normalizedY = Math.min(1, Math.max(0, ballY / canvas.height));
+    const normalizedVelX = (ballVelX + BALL_SPEED) / (2 * BALL_SPEED);
+    const normalizedVelY = (ballVelY + BALL_SPEED) / (2 * BALL_SPEED);
+    
+    const freqX = PROTOCOL.DATA_START + (normalizedX * dataRange);
+    const freqY = PROTOCOL.DATA_START + (normalizedY * dataRange);
+    const freqVelX = PROTOCOL.DATA_START + (normalizedVelX * dataRange);
+    const freqVelY = PROTOCOL.DATA_START + (normalizedVelY * dataRange);
+    
+    // Send each frequency with clear timing
+    audioSender.frequency.setValueAtTime(freqX, now + stepDuration * 3);
+    audioSender.frequency.setValueAtTime(freqY, now + stepDuration * 5);
+    audioSender.frequency.setValueAtTime(freqVelX, now + stepDuration * 7);
+    audioSender.frequency.setValueAtTime(freqVelY, now + stepDuration * 9);
+    
+    // End marker
+    audioSender.frequency.setValueAtTime(PROTOCOL.END, now + stepDuration * 11);
+    
+    // Reset to silence
+    audioSender.frequency.setValueAtTime(0, now + stepDuration * 13);
+    
+    console.log('Sent trajectory data');
+  } catch(e) {
+    console.error('Error sending trajectory:', e);
+  }
+}
+
+// Decode audio data using peak detection
+function decodeAudioData() {
+  if (!audioReceiver) {
+    console.error('No audio receiver available');
+    return;
+  }
   
-  // Store the frequency for pattern detection
-  updateFrequencyBuffer(frequency);
-  
-  // Process the frequency buffer to extract data
-  processFrequencyBuffer();
+  try {
+    const bufferLength = audioReceiver.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    audioReceiver.getByteFrequencyData(dataArray);
+    
+    // Find peaks in the ultrasonic range
+    let peaks = [];
+    let maxValue = 0;
+    let maxIndex = 0;
+    
+    // Only look at frequencies in our range of interest
+    const startBin = Math.floor(FREQ_MIN * bufferLength / audioContext.sampleRate);
+    const endBin = Math.ceil(FREQ_MAX * bufferLength / audioContext.sampleRate);
+    
+    for (let i = startBin; i < endBin; i++) {
+      if (dataArray[i] > maxValue) {
+        maxValue = dataArray[i];
+        maxIndex = i;
+      }
+      
+      // Check if this is a local peak
+      if (i > 0 && i < bufferLength - 1 &&
+          dataArray[i] > dataArray[i-1] &&
+          dataArray[i] > dataArray[i+1] &&
+          dataArray[i] > 30) { // Signal threshold
+        
+        const frequency = i * audioContext.sampleRate / (2 * bufferLength);
+        peaks.push({ frequency, magnitude: dataArray[i] });
+      }
+    }
+    
+    // Sort peaks by magnitude
+    peaks.sort((a, b) => b.magnitude - a.magnitude);
+    
+    // Take the strongest peak
+    if (peaks.length > 0) {
+      const dominantFreq = peaks[0].frequency;
+      
+      // Only process frequencies in our protocol range
+      if (dominantFreq >= FREQ_MIN && dominantFreq <= FREQ_MAX) {
+        updateFrequencyBuffer(dominantFreq);
+        processFrequencyBuffer();
+      }
+    }
+  } catch(e) {
+    console.error('Error decoding audio:', e);
+  }
 }
 
 // Update the frequency buffer with a new frequency
@@ -586,44 +694,56 @@ function processFrequencyBuffer() {
   if (frequencyBuffer.length < 3) return;
   
   if (!isHost) {
-    // Client only needs trajectory updates
-    const startMarkerIndex = findFrequencyInBuffer(2100, 100);
-    const endMarkerIndex = findFrequencyInBuffer(2200, 100);
+    // Client: Look for start and end markers for trajectory data
+    const startIndex = findFrequencyInBuffer(PROTOCOL.START, FREQ_ERROR_MARGIN);
+    const endIndex = findFrequencyInBuffer(PROTOCOL.END, FREQ_ERROR_MARGIN);
     
-    if (startMarkerIndex >= 0 && endMarkerIndex > startMarkerIndex && 
-        endMarkerIndex - startMarkerIndex >= 5) {
+    if (startIndex >= 0 && endIndex > startIndex && endIndex - startIndex >= 5) {
+      // Extract data frequencies
+      const frequencies = frequencyBuffer.slice(startIndex + 1, endIndex);
       
-      // Extract trajectory data
-      const xFreq = frequencyBuffer[startMarkerIndex + 1];
-      const yFreq = frequencyBuffer[startMarkerIndex + 2];
-      const velXFreq = frequencyBuffer[startMarkerIndex + 3];
-      const velYFreq = frequencyBuffer[startMarkerIndex + 4];
+      // Convert frequencies back to normalized values
+      const dataRange = FREQ_MAX - PROTOCOL.DATA_START;
       
-      // Decode trajectory
-      if (xFreq >= 300 && xFreq <= 2000 && 
-          yFreq >= 300 && yFreq <= 2000 &&
-          velXFreq >= 300 && velXFreq <= 2000 &&
-          velYFreq >= 300 && velYFreq <= 2000) {
-        
-        const normalizedX = (xFreq - 300) / 1700;
-        const normalizedY = (yFreq - 300) / 1700;
-        const normalizedVelX = (velXFreq - 300) / 1700;
-        const normalizedVelY = (velYFreq - 300) / 1700;
-        
+      const normalizedValues = frequencies.map(freq => 
+        (freq - PROTOCOL.DATA_START) / dataRange
+      );
+      
+      if (normalizedValues.length >= 4) {
         // Update predicted path
         predictedPath = {
-          startX: normalizedX * canvas.width,
-          startY: normalizedY * canvas.height,
-          velX: (normalizedVelX * 2 - 1) * BALL_SPEED,
-          velY: (normalizedVelY * 2 - 1) * BALL_SPEED,
+          startX: normalizedValues[0] * canvas.width,
+          startY: normalizedValues[1] * canvas.height,
+          velX: (normalizedValues[2] * 2 - 1) * BALL_SPEED,
+          velY: (normalizedValues[3] * 2 - 1) * BALL_SPEED,
           timestamp: performance.now()
         };
         
-        // Set initial ball position
+        // Update ball position
         ballX = predictedPath.startX;
         ballY = predictedPath.startY;
         ballVelX = predictedPath.velX;
         ballVelY = predictedPath.velY;
+        
+        console.log('Received trajectory update');
+      }
+    }
+  } else {
+    // Host: Look for client paddle position updates
+    const startIndex = findFrequencyInBuffer(2500, FREQ_ERROR_MARGIN); // Client paddle marker
+    const endIndex = findFrequencyInBuffer(2600, FREQ_ERROR_MARGIN);
+    
+    if (startIndex >= 0 && endIndex > startIndex && endIndex - startIndex >= 1) {
+      // Get the paddle position frequency
+      const paddleFreq = findAverageFrequencyBetween(startIndex + 1, endIndex);
+      
+      if (paddleFreq >= 300 && paddleFreq <= 2000) {
+        // Convert frequency to normalized position
+        const normalizedPosition = (paddleFreq - 300) / 1700;
+        
+        // Update client paddle position
+        clientPaddleY = normalizedPosition * canvas.height;
+        console.log('Received client paddle position update');
       }
     }
   }
@@ -655,6 +775,30 @@ function findAverageFrequencyBetween(startIdx, endIdx) {
   }
   
   return count > 0 ? sum / count : 0;
+}
+
+// Send client paddle position to host
+function sendClientPaddlePosition() {
+  if (!audioSender || isHost) return;
+  
+  const now = audioContext.currentTime;
+  const stepDuration = 0.01; // 10ms per value
+  
+  try {
+    // Normalize paddle position
+    const normalizedClientPaddle = clientPaddleY / canvas.height;
+    const freqClientPaddle = 300 + normalizedClientPaddle * 1700;
+    
+    // Send paddle update with markers
+    audioSender.frequency.setValueAtTime(2500, now); // Client paddle update marker
+    audioSender.frequency.setValueAtTime(freqClientPaddle, now + stepDuration);
+    audioSender.frequency.setValueAtTime(2600, now + stepDuration * 2);
+    audioSender.frequency.setValueAtTime(0, now + stepDuration * 3); // Reset to silence
+    
+    console.log('Sent client paddle position');
+  } catch(e) {
+    console.error('Error sending client paddle position:', e);
+  }
 }
 
 // Start the game when the page loads
