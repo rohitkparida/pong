@@ -1,45 +1,69 @@
-const CACHE_NAME = 'pong-pwa-v1-debug';
+// Service Worker for Pong PWA
+const CACHE_NAME = 'pong-pwa-v1.1.0-p2p';
 const ASSETS = [
-  './',
-  './index.html',
-  './styles.css',
-  './script.js',
-  './manifest.json',
-  './icon.png',
-  './icon-512.png'
+  '/',
+  '/index.html',
+  '/style.css',
+  '/script.js',
+  '/manifest.json',
+  '/icon-192.png',
+  '/icon-512.png'
 ];
 
 // Install event - cache assets
 self.addEventListener('install', event => {
-  // Skip waiting to update service worker immediately
-  self.skipWaiting();
-});
-
-// Activate event - clean up old caches and claim clients
-self.addEventListener('activate', event => {
   event.waitUntil(
-    caches.keys()
-      .then(cacheNames => {
-        return Promise.all(
-          cacheNames.map(cacheName => caches.delete(cacheName))
-        );
+    caches.open(CACHE_NAME)
+      .then(cache => {
+        console.log('Cache opened');
+        return cache.addAll(ASSETS);
       })
-      .then(() => self.clients.claim())
+      .then(() => self.skipWaiting())
   );
 });
 
-// Fetch event - bypass cache, always go to network
+// Activate event - clean up old caches
+self.addEventListener('activate', event => {
+  event.waitUntil(
+    caches.keys().then(cacheNames => {
+      return Promise.all(
+        cacheNames.map(cacheName => {
+          if (cacheName !== CACHE_NAME) {
+            console.log('Deleting old cache:', cacheName);
+            return caches.delete(cacheName);
+          }
+        })
+      );
+    }).then(() => self.clients.claim())
+  );
+});
+
+// Fetch event - serve from cache or network
 self.addEventListener('fetch', event => {
   event.respondWith(
-    fetch(event.request)
-      .catch(() => {
-        // Only fallback for navigation requests
-        if (event.request.mode === 'navigate') {
-          return new Response('Offline - Cache disabled for testing', {
-            headers: { 'Content-Type': 'text/plain' }
-          });
+    caches.match(event.request)
+      .then(response => {
+        if (response) {
+          return response;
         }
-        return null;
+        return fetch(event.request).then(
+          response => {
+            // Don't cache if not a valid response
+            if (!response || response.status !== 200 || response.type !== 'basic') {
+              return response;
+            }
+            
+            // Clone the response
+            const responseToCache = response.clone();
+            
+            caches.open(CACHE_NAME)
+              .then(cache => {
+                cache.put(event.request, responseToCache);
+              });
+              
+            return response;
+          }
+        );
       })
   );
 }); 

@@ -1,14 +1,14 @@
 {
-  "name": "Pong PWA with Audio",
+  "name": "Pong PWA",
   "short_name": "Pong",
-  "start_url": "/index.html",
-  "display": "standalone",
+  "description": "A peer-to-peer Pong game using audio for data transmission",
+  "start_url": "/",
+  "display": "fullscreen",
   "background_color": "#000000",
   "theme_color": "#000000",
-  "description": "Play Pong with a friend using audio to transmit game data",
   "icons": [
     {
-      "src": "icon.png",
+      "src": "icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
@@ -19,5 +19,7 @@
       "type": "image/png",
       "purpose": "any maskable"
     }
-  ]
+  ],
+  "orientation": "landscape",
+  "version": "1.1.0"
 } 
