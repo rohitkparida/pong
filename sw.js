@@ -11,34 +11,33 @@ const ASSETS = [
 
 // Install event - cache assets
 self.addEventListener('install', event => {
-  event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then(cache => cache.addAll(ASSETS))
-      .then(() => self.skipWaiting())
-  );
+  // Skip waiting to update service worker immediately
+  self.skipWaiting();
 });
 
-// Activate event - clean up old caches
+// Activate event - clean up old caches and claim clients
 self.addEventListener('activate', event => {
   event.waitUntil(
-    caches.keys().then(cacheNames => {
-      return Promise.all(
-        cacheNames.filter(cacheName => cacheName !== CACHE_NAME)
-          .map(cacheName => caches.delete(cacheName))
-      );
-    }).then(() => self.clients.claim())
+    caches.keys()
+      .then(cacheNames => {
+        return Promise.all(
+          cacheNames.map(cacheName => caches.delete(cacheName))
+        );
+      })
+      .then(() => self.clients.claim())
   );
 });
 
-// Fetch event - serve from cache, fall back to network
+// Fetch event - bypass cache, always go to network
 self.addEventListener('fetch', event => {
   event.respondWith(
-    caches.match(event.request)
-      .then(response => response || fetch(event.request))
+    fetch(event.request)
       .catch(() => {
-        // Return a fallback for HTML pages
+        // Only fallback for navigation requests
         if (event.request.mode === 'navigate') {
-          return caches.match('/index.html');
+          return new Response('Offline - Cache disabled for testing', {
+            headers: { 'Content-Type': 'text/plain' }
+          });
         }
         return null;
       })
