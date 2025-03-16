@@ -1,0 +1,19 @@
+{
+  "name": "pong-pwa-audio",
+  "version": "1.0.0",
+  "description": "Pong PWA with Audio Data Transmission",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "pwa",
+    "pong",
+    "game",
+    "audio",
+    "web audio api"
+  ],
+  "author": "",
+  "license": "MIT"
+} 

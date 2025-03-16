@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#000000">
+  <title>Pong PWA</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon.png">
+  <script>
+    // Register service worker
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js')
+          .then(reg => console.log('Service Worker registered'))
+          .catch(err => console.error('Service Worker registration failed:', err));
+      });
+    }
+  </script>
+</head>
+<body>
+  <div id="game-container">
+    <div id="setup-screen" class="screen active">
+      <h1>Pong PWA</h1>
+      <p>Play Pong with a friend nearby using audio!</p>
+      <div class="button-container">
+        <button id="host-btn" class="btn">Host Game</button>
+        <button id="join-btn" class="btn">Join Game</button>
+      </div>
+      <div id="status-message"></div>
+    </div>
+    
+    <div id="game-screen" class="screen">
+      <canvas id="game-canvas"></canvas>
+      <div id="score">0 - 0</div>
+      <button id="back-btn" class="btn small">Back</button>
+    </div>
+  </div>
+  
+  <script src="script.js"></script>
+</body>
+</html> 
