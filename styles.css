@@ -106,6 +106,14 @@ p {
   color: var(--primary-color);
 }
 
+.version {
+  font-size: 0.8rem;
+  color: #666;
+  margin-top: -10px;
+  margin-bottom: 15px;
+  font-family: monospace;
+}
+
 @media (min-width: 768px) {
   .button-container {
     flex-direction: row;
